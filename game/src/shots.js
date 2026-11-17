@@ -1,4 +1,4 @@
-// LANTERNFALL — the screenshot scenes behind ?shot=start|play|upgrade|victory.
+// LANTERNFALL — the screenshot scenes behind ?shot=start|play|upgrade|victory|defeat.
 //
 // Each scene plays the real rules forward from a fresh world, steered by a
 // small deterministic autopilot: it spends shards on towers, sends waves as
@@ -210,6 +210,44 @@ function stageUpgrade(world, ui) {
   return { screen: 'play', best: 0 };
 }
 
+function stageDefeat(world, ui) {
+  beginRun(world);
+  // A deliberately weak build: one ember, never upgraded, waves sent as
+  // soon as the build phase allows. With 20 lives and scaling waves the
+  // lantern should fall on its own; the fallback below only stages the
+  // tally if the run outlasts the step cap.
+  const outcome = steer(
+    world,
+    () => {
+      const current = stateOf(world);
+      if (current.waveState === 'build') {
+        if (!towerOnPlot(world, 0)) tryCall(world, 'buildTower', 0, 'ember');
+        tryCall(world, 'sendWave');
+      }
+    },
+    () => false,
+    VICTORY_STEP_CAP,
+  );
+  const state = stateOf(world);
+  if (outcome.lost) {
+    return { screen: 'defeat', best: state.score };
+  }
+
+  // The weak build survived the cap: stage a plausible defeat position
+  // instead. The wave reached and the score are from the real run; only
+  // the lantern's fall is set, the same fallback pattern as stageVictory.
+  state.lives = 0;
+  state.waveState = 'build';
+  if (Array.isArray(state.enemies)) state.enemies.length = 0;
+  if (Array.isArray(state.projectiles)) state.projectiles.length = 0;
+  if (Array.isArray(state.spawnQueue)) state.spawnQueue.length = 0;
+  if (Array.isArray(state.particles)) state.particles.length = 0;
+  if (Array.isArray(state.floaters)) state.floaters.length = 0;
+  state.spawnTimer = 0;
+  state.waveTime = 0;
+  return { screen: 'defeat', best: state.score };
+}
+
 function stageVictory(world, ui) {
   beginRun(world);
   const outcome = steer(world, () => basicDecide(world), () => false, VICTORY_STEP_CAP);
@@ -255,6 +293,8 @@ export function stageShot(name, world, ui) {
       return stageUpgrade(world, safeUi);
     case 'victory':
       return stageVictory(world, safeUi);
+    case 'defeat':
+      return stageDefeat(world, safeUi);
     default:
       return stageStart(world, safeUi);
   }
