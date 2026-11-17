@@ -24,7 +24,11 @@ const PLOT_TYPES = [
 /** Hard cap on steps for the full-game victory attempt. */
 const VICTORY_STEP_CAP = 150000;
 /** Steps after which stagePlay accepts a merely-acceptable frame. */
-const PLAY_FALLBACK_STEPS = 60 * 150;
+const PLAY_FALLBACK_STEPS = 60 * 500;
+/** Cap for the boss-fight play scene: the wave-15 frame lands ~step 24658. */
+const PLAY_STEP_CAP = 60 * 450;
+/** Steps after which stagePlay accepts any mid-wave frame at all. */
+const PLAY_LAST_RESORT_STEPS = 60 * 540;
 /** Steps of play the title scene stages first (~6 seconds of wave 1). */
 const START_STEPS = 360;
 /** Generous cap for the mid-game scenes, in steps. */
@@ -131,46 +135,64 @@ function stageStart(world, ui) {
 
 function stagePlay(world, ui) {
   beginRun(world);
-  // A lively frame: a real mid-game army (wave 3+), at least four towers
-  // standing, a crowd on the path, and something in the air — a bolt, a
-  // chain link or a kill burst — so the shot reads as a battle, not a
-  // posed field. Measured with seed 1: the fourth tower only lands after
-  // wave 4 clears (the autopilot spends a mid-wave-3 upgrade first) and
-  // the wave-5 boss wave never holds 4 alive, so this lands mid-wave 6.
-  const lively = (state) => {
-    const towers = state.towers || [];
-    const enemies = state.enemies || [];
-    const midWave = state.waveState === 'fighting' || state.waveState === 'spawning';
-    if (!midWave || (state.wave || 0) < 3) return false;
-    if (towers.length < 4 || enemies.length < 4) return false;
-    const projectiles = state.projectiles || [];
-    const particles = state.particles || [];
-    return projectiles.length > 0 || particles.length > 0;
+  // A boss-fight frame, not a quiet mid-wave one: the wave-15 wraith
+  // with its escort swarm. Measured with seed 1 (Node probe, same
+  // steering as here): wave 5 never holds more than 3 enemies alive, wave
+  // 10 peaks at ~17 enemies, but wave 15 — wraith + 8 brutes + 10 shades
+  // + 20 swarmlings, all slowed into a jam by the frost wards — peaks at
+  // 27-32 alive at once. The predicate below first lands at step 24658
+  // (wave time 18.7 s): 28 enemies on the top leg, boss at (446, 110)
+  // with 72% HP, 5 projectiles in the air, 21 particles, 4 floaters,
+  // 12 towers standing, score 25,900 — the busiest boss-alive frame of
+  // the whole game, and still a real frame a real game reaches.
+  const bossFrame = (state) => {
+    if (state.wave !== 15) return false;
+    if (state.waveState !== 'fighting' && state.waveState !== 'spawning') return false;
+    const boss = (state.enemies || []).find((e) => e.kind === 'wraith');
+    if (!boss) return false;
+    if ((state.waveTime || 0) < 16) return false;
+    if ((state.enemies || []).length < 24) return false;
+    if ((state.projectiles || []).length < 3) return false;
+    return (state.particles || []).length >= 15;
   };
-  // After two and a half minutes of game time, take any mid-wave-3+ frame
-  // with enemies on the path rather than running on to the step cap. The
-  // threshold sits past the long wave-5 boss wave (about 57 s, at most 3
-  // enemies alive at once, so the lively bar can never clear there) — with
-  // seed 1 the first lively frame lands at step 7201, one step after the
-  // old 120 s threshold would have cut in, so the fallback must not sit
-  // right on top of wave 6 either.
+  const midWave = (state) => state.waveState === 'fighting' || state.waveState === 'spawning';
   const playStop = (state, steps) => {
-    if (lively(state)) return true;
-    if (steps < PLAY_FALLBACK_STEPS) return false;
-    const midWave = state.waveState === 'fighting' || state.waveState === 'spawning';
-    return (state.wave || 0) >= 3 && midWave && (state.enemies || []).length > 0;
+    if (bossFrame(state)) return true;
+    // Fallbacks, in order of preference, if the boss frame never lands
+    // (another seed, a future balance change): a busy wave-10+ frame,
+    // then any mid-wave frame with enemies on the path.
+    if (steps >= PLAY_FALLBACK_STEPS && state.wave >= 10 && midWave(state)
+      && (state.enemies || []).length >= 10) return true;
+    if (steps >= PLAY_LAST_RESORT_STEPS && state.wave >= 3 && midWave(state)
+      && (state.enemies || []).length > 0) return true;
+    return false;
   };
-  let outcome = steer(world, () => basicDecide(world), playStop, SCENE_STEP_CAP);
-  if (outcome.lost) {
-    // A lost run would stage a defeat behind a play screen; restart fresh
-    // and take the first lively mid-wave frame instead of an empty field.
+  let outcome = steer(world, () => basicDecide(world), playStop, PLAY_STEP_CAP);
+  if (outcome.lost || outcome.won) {
+    // The run ended before the boss frame (lost) or ran straight through
+    // it to victory; restart fresh and take the first busy wave-10+
+    // frame instead of an empty post-game field.
     beginRun(world);
     outcome = steer(
       world,
       () => basicDecide(world),
       (state) => {
-        const midWave = state.waveState === 'fighting' || state.waveState === 'spawning';
-        return state.wave >= 2 && midWave && (state.enemies || []).length > 0;
+        if (!midWave(state) || state.wave < 10) return false;
+        if ((state.enemies || []).length < 8) return false;
+        return (state.projectiles || []).length > 0 || (state.particles || []).length > 0;
+      },
+      VICTORY_STEP_CAP,
+    );
+  }
+  if (outcome.lost || outcome.won) {
+    // Still nothing: take the first lively mid-wave frame, as before.
+    beginRun(world);
+    outcome = steer(
+      world,
+      () => basicDecide(world),
+      (state) => {
+        if (!midWave(state) || state.wave < 2) return false;
+        return (state.enemies || []).length > 0;
       },
       SCENE_STEP_CAP,
     );
