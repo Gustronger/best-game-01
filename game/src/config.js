@@ -42,10 +42,23 @@ export const MAX_WAVES = 15;
 // Best score lives in localStorage under this key.
 export const BEST_KEY = 'lanternfall-best';
 
+// Balance target (verified by the dev harness in ../dev, seed 12345):
+// the wave-5 wraith must fall to a frost/storm-first build, not just to
+// ember-heavy ones. At the old numbers a lone frost could not kill wave-1
+// wisps (its 1 s pulse grid let them cross a 64 px zone between pulses),
+// and a 2-frost + 1-storm comp dealt only ~40% of the boss's HP. So frost
+// pulses twice as often and twice as hard, storm hits harder and fires a
+// little faster (22 -> 28 damage, 0.8 -> 1.0/s: it clears the boss's
+// escorts instead of wasting shots on them), and wraith HP is halved.
+// Measured after the change: frost-first kills the wave-5 boss
+// halfway along the path, storm-first and ember-heavy clear it comfortably,
+// the full-game autopilot wins with 20/20 lives, and the wave-10/15 bosses
+// still need a real army (killed around mid-path, never at the gate).
+// Ember, costs, lives and wave structure are untouched.
 export const TOWER_STATS = {
   ember: { cost: 50, damage: 12, range: 120, fireRate: 2.2, projectileSpeed: 420 },
-  frost: { cost: 75, damage: 4, range: 105, fireRate: 1.0, slowFactor: 0.6, slowDuration: 1.2 },
-  storm: { cost: 120, damage: 22, range: 140, fireRate: 0.8, chains: 3, chainRange: 100 },
+  frost: { cost: 75, damage: 8, range: 105, fireRate: 2.0, slowFactor: 0.6, slowDuration: 1.2 },
+  storm: { cost: 120, damage: 28, range: 140, fireRate: 1.0, chains: 3, chainRange: 100 },
 };
 
 export const UPGRADE_COST_FACTOR = 0.75;
@@ -56,7 +69,7 @@ export const ENEMY_STATS = {
   shade: { hp: 55, speed: 55, reward: 9, lives: 1, radius: 12 },
   brute: { hp: 220, speed: 32, reward: 20, lives: 2, radius: 16 },
   swarmling: { hp: 12, speed: 70, reward: 3, lives: 1, radius: 7 },
-  wraith: { hp: 1400, speed: 26, reward: 150, lives: 5, radius: 24 },
+  wraith: { hp: 700, speed: 26, reward: 150, lives: 5, radius: 24 },
 };
 
 export const HP_SCALE_PER_WAVE = 0.12;
