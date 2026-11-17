@@ -615,29 +615,53 @@ export function createRenderer(canvas) {
 
   function drawEnemy(e, state) {
     const r = e.radius || 14;
+    // The wraith is drawn bigger than its collision radius: a purely
+    // visual scale, so its size on screen never changes its hitbox,
+    // speed or HP. Everything below that uses `vr` is presentation.
+    const isBoss = e.kind === 'wraith';
+    const vr = isBoss ? r * 1.35 : r;
     const chilled = e.slowUntil && state.time !== undefined && e.slowUntil > state.time;
     const eye = EYE_COLOR[e.kind] || '#ffffff';
-    // Boss aura.
-    if (e.kind === 'wraith') {
-      const aura = ctx.createRadialGradient(e.x, e.y, 4, e.x, e.y, r + 26);
-      aura.addColorStop(0, 'rgba(182, 120, 255, 0.4)');
+    // Boss aura: wider and stronger than a normal enemy's, plus a thin
+    // violet ring so the wraith reads as the centre of the fight even
+    // at thumbnail size.
+    if (isBoss) {
+      const aura = ctx.createRadialGradient(e.x, e.y, 4, e.x, e.y, vr + 44);
+      aura.addColorStop(0, 'rgba(182, 120, 255, 0.5)');
       aura.addColorStop(1, 'rgba(182, 120, 255, 0)');
       ctx.fillStyle = aura;
-      ctx.fillRect(e.x - r - 26, e.y - r - 26, (r + 26) * 2, (r + 26) * 2);
+      ctx.fillRect(e.x - vr - 44, e.y - vr - 44, (vr + 44) * 2, (vr + 44) * 2);
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, vr + 18, 0, Math.PI * 2);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(192, 132, 252, 0.45)';
+      ctx.stroke();
     }
     // Ground shadow so the shadow creature still casts one.
-    dropShadow(e.x, e.y + r * 0.75, r * 0.9, r * 0.32);
+    dropShadow(e.x, e.y + vr * 0.75, vr * 0.9, vr * 0.32);
+    // Boss horns, drawn before the body so their bases tuck behind it.
+    if (isBoss) {
+      ctx.fillStyle = '#8b5cf6';
+      for (let s = -1; s <= 1; s += 2) {
+        ctx.beginPath();
+        ctx.moveTo(e.x + s * vr * 0.72, e.y - vr * 0.45);
+        ctx.lineTo(e.x + s * vr * 0.48, e.y - vr * 1.2);
+        ctx.lineTo(e.x + s * vr * 0.22, e.y - vr * 0.5);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
     ctx.beginPath();
-    ctx.ellipse(e.x, e.y, r, r * 0.85, 0, 0, Math.PI * 2);
-    ctx.fillStyle = chilled ? '#2a4a5e' : '#2a2438';
+    ctx.ellipse(e.x, e.y, vr, vr * 0.85, 0, 0, Math.PI * 2);
+    ctx.fillStyle = chilled ? '#2a4a5e' : (isBoss ? '#241a3d' : '#2a2438');
     ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = chilled ? FROST : '#4a3f6e';
+    ctx.lineWidth = isBoss ? 3 : 2;
+    ctx.strokeStyle = chilled ? FROST : (isBoss ? '#8b5cf6' : '#4a3f6e');
     ctx.stroke();
     // Bright rim along the top edge: the body catches the sky light, so
     // the silhouette separates from the dark path underneath.
     ctx.beginPath();
-    ctx.ellipse(e.x, e.y, r, r * 0.85, 0, Math.PI * 1.05, Math.PI * 1.95);
+    ctx.ellipse(e.x, e.y, vr, vr * 0.85, 0, Math.PI * 1.05, Math.PI * 1.95);
     ctx.lineWidth = 2;
     ctx.strokeStyle = chilled ? 'rgba(159, 232, 255, 0.55)' : 'rgba(190, 175, 255, 0.38)';
     ctx.stroke();
@@ -656,35 +680,38 @@ export function createRenderer(canvas) {
     const px = -fy;
     const py = fx;
     // Glowing eyes: a small shadowBlur so they bloom against the dark body.
+    // The boss's eyes are bigger and sit further out on its larger body.
     ctx.save();
     ctx.shadowColor = eye;
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = isBoss ? 12 : 8;
     for (let s = -1; s <= 1; s += 2) {
-      const ex = e.x + fx * r * 0.35 + px * s * r * 0.38;
-      const ey = e.y + fy * r * 0.35 + py * s * r * 0.38;
+      const ex = e.x + fx * vr * 0.35 + px * s * vr * 0.38;
+      const ey = e.y + fy * vr * 0.35 + py * s * vr * 0.38;
       ctx.beginPath();
-      ctx.arc(ex, ey, e.kind === 'wraith' ? 4.5 : 3, 0, Math.PI * 2);
+      ctx.arc(ex, ey, isBoss ? 5.5 : 3, 0, Math.PI * 2);
       ctx.fillStyle = eye;
       ctx.fill();
     }
     ctx.restore();
     if (chilled) {
       ctx.beginPath();
-      ctx.arc(e.x, e.y, r + 4, 0, Math.PI * 2);
+      ctx.arc(e.x, e.y, vr + 4, 0, Math.PI * 2);
       ctx.lineWidth = 2;
       ctx.strokeStyle = 'rgba(79, 216, 255, 0.8)';
       ctx.stroke();
     }
-    // HP bar for the tough ones, and for anything already hurt.
+    // HP bar for the tough ones, and for anything already hurt. The boss
+    // bar is wider and labelled, so it reads at thumbnail size.
     if (e.kind === 'brute' || e.kind === 'wraith' || (e.maxHp && e.hp < e.maxHp)) {
-      const bw = e.kind === 'wraith' ? 52 : 36;
+      const bw = isBoss ? 64 : 36;
       const bx = e.x - bw / 2;
-      const by = e.y - r - 12;
+      const by = e.y - vr - 14;
+      if (isBoss) text('WRAITH', e.x, by - 5, 11, STORM, 'center');
       ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-      ctx.fillRect(bx, by, bw, 5);
+      ctx.fillRect(bx, by, bw, isBoss ? 6 : 5);
       const frac = Math.max(0, Math.min(1, e.hp / (e.maxHp || 1)));
-      ctx.fillStyle = e.kind === 'wraith' ? STORM : (frac > 0.5 ? '#7ee081' : '#ff5a4e');
-      ctx.fillRect(bx, by, bw * frac, 5);
+      ctx.fillStyle = isBoss ? STORM : (frac > 0.5 ? '#7ee081' : '#ff5a4e');
+      ctx.fillRect(bx, by, bw * frac, isBoss ? 6 : 5);
     }
   }
 
@@ -890,6 +917,33 @@ export function createRenderer(canvas) {
     }
   }
 
+  // Boss banner: while a wraith is alive mid-wave, a small pill at the
+  // top-left of the field names the fight ("WAVE 15 — WRAITH"). Purely
+  // derived from state (wave number + a wraith in the enemy list), so it
+  // is deterministic; it sits above the path (y 48–76) where no enemy
+  // body ever reaches, and only during fighting, never in the build
+  // phase. In a thumbnail it is the one line that says "boss fight".
+  function drawBossBanner(state) {
+    if (state.waveState !== 'fighting' && state.waveState !== 'spawning') return;
+    const enemies = state.enemies || [];
+    let bossAlive = false;
+    for (let i = 0; i < enemies.length; i += 1) {
+      if (enemies[i].kind === 'wraith') { bossAlive = true; break; }
+    }
+    if (!bossAlive) return;
+    const px = 12;
+    const py = 48;
+    const pw = 252;
+    const ph = 28;
+    roundRectPath(px, py, pw, ph, 8);
+    ctx.fillStyle = 'rgba(14, 13, 32, 0.78)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = STORM;
+    ctx.stroke();
+    text('WAVE ' + (state.wave || 0) + ' — WRAITH', px + 14, py + 20, 17, '#c084fc', 'left');
+  }
+
   function drawPlayField(state, ui) {
     drawField(state);
     drawPath();
@@ -956,6 +1010,7 @@ export function createRenderer(canvas) {
     drawHud(s);
     drawBottomBar(s, u);
     if (screen === SCREEN_PLAY) {
+      drawBossBanner(s);
       drawSelectionPanel(s, u, screen);
       // Bottom-bar control buttons (send wave, auto-send, pause, mute).
       // Only on the play screen: the paused overlay has its own buttons and
