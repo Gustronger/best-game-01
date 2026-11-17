@@ -1,61 +1,62 @@
-// Every tuning number and colour in one place. The playfield is a fixed 1280x720 logical area;
-// the renderer scales it to the window, so no rule below depends on the screen size.
+// LANTERNFALL — shared tuning constants.
+// One place for every number the rules, the renderer and the HUD agree on,
+// so a balance change here flows through the whole game untouched elsewhere.
 
-export const FIELD = { width: 1280, height: 720, groundY: 664 };
-
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
 export const STEP = 1 / 60;
 
-export const PLAYER = {
-  width: 72,
-  height: 24,
-  speed: 560,
-  invulnerable: 1.5,
+export const FIELD = { width: 960, height: 600 };
+
+export const PATH_POINTS = [
+  { x: -20, y: 110 },
+  { x: 700, y: 110 },
+  { x: 700, y: 300 },
+  { x: 200, y: 300 },
+  { x: 200, y: 490 },
+  { x: 980, y: 490 },
+];
+
+export const PLOTS = [
+  { x: 120, y: 200 },
+  { x: 300, y: 200 },
+  { x: 480, y: 200 },
+  { x: 600, y: 200 },
+  { x: 800, y: 200 },
+  { x: 120, y: 400 },
+  { x: 330, y: 400 },
+  { x: 540, y: 400 },
+  { x: 780, y: 400 },
+  { x: 90, y: 540 },
+  { x: 420, y: 540 },
+  { x: 700, y: 540 },
+];
+
+export const LANTERN = { x: 920, y: 490 };
+
+// Economy targets: waves 1-4 pay out ~345 shards on top of the 120 start,
+// so a decent player fields 3-4 towers by the wave-5 boss; a level-up costs
+// round(base * 0.75 * targetLevel) and selling refunds 70% of all invested.
+export const START_SHARDS = 120;
+export const START_LIVES = 20;
+export const MAX_WAVES = 15;
+
+// Best score lives in localStorage under this key.
+export const BEST_KEY = 'lanternfall-best';
+
+export const TOWER_STATS = {
+  ember: { cost: 50, damage: 12, range: 120, fireRate: 2.2, projectileSpeed: 420 },
+  frost: { cost: 75, damage: 4, range: 105, fireRate: 1.0, slowFactor: 0.6, slowDuration: 1.2 },
+  storm: { cost: 120, damage: 22, range: 140, fireRate: 0.8, chains: 3, chainRange: 100 },
 };
 
-export const LIVES = 3;
+export const UPGRADE_COST_FACTOR = 0.75;
+export const SELL_REFUND = 0.7;
 
-export const BLOCK = {
-  minWidth: 40,
-  maxWidth: 110,
-  height: 36,
-  speed: 240,
-  speedPerLevel: 30,
-  speedJitter: 90,
-  interval: 0.55,
-  intervalScale: 0.88,
-  minInterval: 0.14,
-  dodgePoints: 1,
+export const ENEMY_STATS = {
+  wisp: { hp: 22, speed: 95, reward: 6, lives: 1, radius: 9 },
+  shade: { hp: 55, speed: 55, reward: 9, lives: 1, radius: 12 },
+  brute: { hp: 220, speed: 32, reward: 20, lives: 2, radius: 16 },
+  swarmling: { hp: 12, speed: 70, reward: 3, lives: 1, radius: 7 },
+  wraith: { hp: 1400, speed: 26, reward: 150, lives: 5, radius: 24 },
 };
 
-export const COIN = {
-  size: 24,
-  speed: 190,
-  speedPerLevel: 14,
-  interval: 1.4,
-  intervalJitter: 0.8,
-  points: 10,
-};
-
-/** Seconds of play per level, and the last level: speeds and spawn rates stop growing there. */
-export const LEVEL = { seconds: 12, max: 12 };
-
-/** How many falling things can exist at once; the pool is allocated once, at boot. */
-export const POOL_SIZE = 64;
-
-export const PALETTE = {
-  backdrop: '#11141b',
-  sky: '#1b1f2a',
-  ground: '#2a3040',
-  player: '#4fc3f7',
-  block: '#e5534b',
-  coin: '#f2c94c',
-  panel: '#252b38',
-  text: '#eef1f5',
-  muted: '#8b93a3',
-};
-
-export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-
-/** Where the best score is kept between visits (this browser only). */
-export const BEST_KEY = 'block-dodger.best';
+export const HP_SCALE_PER_WAVE = 0.12;
