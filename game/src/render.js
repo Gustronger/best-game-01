@@ -185,9 +185,11 @@ export function createRenderer(canvas) {
   }
 
   // Dusk field: indigo overhead fading to a faintly warm horizon, two
-  // deterministic sine ridges for a skyline, twinkling stars, and a
-  // stronger vignette so the eye falls on the lit path.
+  // deterministic sine ridges for a skyline, a moon, slow clouds,
+  // twinkling stars, and a stronger vignette so the eye falls on the
+  // lit path.
   function drawField(state) {
+    const t = state.time || 0;
     const sky = ctx.createLinearGradient(0, 0, 0, H);
     sky.addColorStop(0, '#12112e');
     sky.addColorStop(0.45, '#1a1738');
@@ -216,6 +218,32 @@ export function createRenderer(canvas) {
       ctx.fillStyle = rg.color;
       ctx.fill();
     }
+    // Moon: a pale disc with a soft halo. It MUST be drawn after the
+    // ridges: each ridge fill covers everything from y = 44 down to its
+    // own line, so a moon drawn before them is painted over entirely.
+    // Placed at (120, 66) so the whole disc sits below the HUD bar
+    // (y < 44) and just above the far ridge there (ridge top ~85 at
+    // x = 120) — a moon clipped by the HUD reads as a rendering bug.
+    const moonX = 120;
+    const moonY = 66;
+    const moonGlow = ctx.createRadialGradient(moonX, moonY, 8, moonX, moonY, 64);
+    moonGlow.addColorStop(0, 'rgba(232, 230, 255, 0.28)');
+    moonGlow.addColorStop(1, 'rgba(232, 230, 255, 0)');
+    ctx.fillStyle = moonGlow;
+    ctx.fillRect(moonX - 64, moonY - 64, 128, 128);
+    ctx.beginPath();
+    ctx.arc(moonX, moonY, 20, 0, Math.PI * 2);
+    ctx.fillStyle = '#e9e7f7';
+    ctx.fill();
+    // Three faint craters, placed by index hash so the face never changes.
+    for (let c = 0; c < 3; c += 1) {
+      const cx = moonX - 9 + hash01(c, 11) * 18;
+      const cy = moonY - 8 + hash01(c, 12) * 16;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3 + hash01(c, 13) * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(178, 172, 218, 0.35)';
+      ctx.fill();
+    }
     // Deterministic starfield: positions from index arithmetic, never random.
     for (let i = 0; i < 70; i += 1) {
       const sx = (i * 137) % W;
@@ -223,6 +251,27 @@ export function createRenderer(canvas) {
       const tw = 0.25 + 0.2 * Math.sin((state.time || 0) * 1.5 + i);
       ctx.fillStyle = 'rgba(180, 175, 230, ' + tw.toFixed(2) + ')';
       ctx.fillRect(sx, sy, 2, 2);
+    }
+    // Slow clouds: four pale clusters drifting across the sky band at
+    // 2-4 px/s, wrapping around the edges. Position is a pure function of
+    // state.time, so the same frame always shows the same sky. Kept very
+    // faint (alpha 0.05-0.08) so they veil the stars, never darken the scene.
+    for (let i = 0; i < 4; i += 1) {
+      const cw = 90 + hash01(i, 21) * 70;
+      const cy = 16 + hash01(i, 22) * 38;
+      const speed = 2 + hash01(i, 23) * 2;
+      const span = W + cw + 120;
+      const cx = ((hash01(i, 24) * W + t * speed) % span) - cw / 2 - 60;
+      const alpha = 0.05 + hash01(i, 25) * 0.03;
+      ctx.fillStyle = 'rgba(205, 200, 238, ' + alpha.toFixed(3) + ')';
+      const puffs = 3 + Math.floor(hash01(i, 26) * 2);
+      for (let p = 0; p < puffs; p += 1) {
+        const px = cx + (p * cw) / puffs + (hash01(i * 10 + p, 27) - 0.5) * 24;
+        const py = cy + (hash01(i * 10 + p, 28) - 0.5) * 10;
+        ctx.beginPath();
+        ctx.ellipse(px, py, (cw / puffs) * 0.62, 9 + hash01(i * 10 + p, 29) * 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     // Soft ground shading bands so the field is not a flat slab.
     ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
@@ -469,6 +518,29 @@ export function createRenderer(canvas) {
     // Hot white heart inside the glass so the flame reads as a source.
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(LANTERN.x - 2, LANTERN.y - 24, 4, 10);
+    // Rising embers: ten sparks that climb from the lantern glass and
+    // fade out, each on its own period and phase from index hash. A pure
+    // function of state.time — the same frame always shows the same sparks.
+    for (let i = 0; i < 10; i += 1) {
+      const period = 2.2 + hash01(i, 41) * 1.4;
+      const offset = hash01(i, 42) * period;
+      const cycle = ((t + offset) % period) / period;
+      const rise = 55 + hash01(i, 43) * 25;
+      const sway = 1 + hash01(i, 44);
+      const ex = LANTERN.x
+        + Math.sin(cycle * Math.PI * 2 * sway + hash01(i, 45) * 6) * (2 + cycle * 9);
+      const ey = LANTERN.y - 32 - cycle * rise;
+      const eAlpha = (1 - cycle) * 0.65;
+      const eSize = 2.4 - cycle * 1.1;
+      ctx.beginPath();
+      ctx.arc(ex, ey, eSize + 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 140, 46, ' + (eAlpha * 0.3).toFixed(3) + ')';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(ex, ey, Math.max(0.8, eSize), 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 200, 110, ' + eAlpha.toFixed(3) + ')';
+      ctx.fill();
+    }
     // Lives label sits ABOVE the lantern head: the old spot (below the
     // post foot) is painted over by the bottom bar, so it was invisible.
     const lives = state.lives || 0;
@@ -890,9 +962,39 @@ export function createRenderer(canvas) {
     }
   }
 
+  // Fireflies: slow green-gold drifters over the field, positioned by
+  // index hash and moved only by state.time. Drawn above the path but
+  // below plots, towers and enemies, so they never hide gameplay. Each
+  // one pulses gently; none is ever brighter than a tower glow.
+  function drawFireflies(state) {
+    const t = state.time || 0;
+    for (let i = 0; i < 14; i += 1) {
+      const bx = 40 + hash01(i, 31) * 880;
+      const by = 130 + hash01(i, 32) * 340;
+      const ampX = 16 + hash01(i, 33) * 24;
+      const ampY = 8 + hash01(i, 34) * 16;
+      const sx = 0.05 + hash01(i, 35) * 0.07;
+      const sy = 0.04 + hash01(i, 36) * 0.06;
+      const ph = hash01(i, 37) * Math.PI * 2;
+      const x = bx + Math.sin(t * sx + ph) * ampX;
+      const y = by + Math.cos(t * sy + ph * 1.7) * ampY;
+      const pulse = 0.5 + 0.5 * Math.sin(t * 0.9 + ph * 3);
+      const alpha = 0.18 + 0.32 * pulse;
+      ctx.beginPath();
+      ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(216, 247, 154, ' + (alpha * 0.25).toFixed(3) + ')';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, 1.8, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(230, 252, 180, ' + alpha.toFixed(3) + ')';
+      ctx.fill();
+    }
+  }
+
   function drawPlayField(state, ui) {
     drawField(state);
     drawPath();
+    drawFireflies(state);
     drawPlots(state, ui);
     drawLantern(state);
     const towers = state.towers || [];
