@@ -23,6 +23,8 @@ const PLOT_TYPES = [
 ];
 /** Hard cap on steps for the full-game victory attempt. */
 const VICTORY_STEP_CAP = 150000;
+/** Steps after which stagePlay accepts a merely-acceptable frame. */
+const PLAY_FALLBACK_STEPS = 60 * 150;
 /** Steps of play the title scene stages first (~6 seconds of wave 1). */
 const START_STEPS = 360;
 /** Generous cap for the mid-game scenes, in steps. */
@@ -129,15 +131,36 @@ function stageStart(world, ui) {
 
 function stagePlay(world, ui) {
   beginRun(world);
-  const midGame = (state) => {
-    const towers = towersOf(world);
+  // A lively frame: a real mid-game army (wave 3+), at least four towers
+  // standing, a crowd on the path, and something in the air — a bolt, a
+  // chain link or a kill burst — so the shot reads as a battle, not a
+  // posed field. Measured with seed 1: the fourth tower only lands after
+  // wave 4 clears (the autopilot spends a mid-wave-3 upgrade first) and
+  // the wave-5 boss wave never holds 4 alive, so this lands mid-wave 6.
+  const lively = (state) => {
+    const towers = state.towers || [];
     const enemies = state.enemies || [];
     const midWave = state.waveState === 'fighting' || state.waveState === 'spawning';
-    if (state.wave >= 3 && midWave && enemies.length > 0) return true;
-    if (state.wave === 2 && midWave && towers.length >= 3 && enemies.length >= 3) return true;
-    return false;
+    if (!midWave || (state.wave || 0) < 3) return false;
+    if (towers.length < 4 || enemies.length < 4) return false;
+    const projectiles = state.projectiles || [];
+    const particles = state.particles || [];
+    return projectiles.length > 0 || particles.length > 0;
   };
-  let outcome = steer(world, () => basicDecide(world), midGame, SCENE_STEP_CAP);
+  // After two and a half minutes of game time, take any mid-wave-3+ frame
+  // with enemies on the path rather than running on to the step cap. The
+  // threshold sits past the long wave-5 boss wave (about 57 s, at most 3
+  // enemies alive at once, so the lively bar can never clear there) — with
+  // seed 1 the first lively frame lands at step 7201, one step after the
+  // old 120 s threshold would have cut in, so the fallback must not sit
+  // right on top of wave 6 either.
+  const playStop = (state, steps) => {
+    if (lively(state)) return true;
+    if (steps < PLAY_FALLBACK_STEPS) return false;
+    const midWave = state.waveState === 'fighting' || state.waveState === 'spawning';
+    return (state.wave || 0) >= 3 && midWave && (state.enemies || []).length > 0;
+  };
+  let outcome = steer(world, () => basicDecide(world), playStop, SCENE_STEP_CAP);
   if (outcome.lost) {
     // A lost run would stage a defeat behind a play screen; restart fresh
     // and take the first lively mid-wave frame instead of an empty field.

@@ -10,7 +10,8 @@
 // and every standing thing drops a soft ground shadow so the flat field
 // reads as depth. No Math.random(), no Date.now() anywhere in this file.
 import { PATH_POINTS, PLOTS, LANTERN } from './config.js';
-import { upgradeCost, sellValue, towerDamage, towerRange } from './towers.js';
+import { towerCost, upgradeCost, sellValue, towerDamage, towerRange } from './towers.js';
+import { createFx, updateFx, drawFx } from './fx.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -136,6 +137,10 @@ export function getButtons(screen, state, ui) {
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
+  // Renderer-local kill-burst layer (fx.js): observes one paint per draw
+  // call and draws type-flavoured sparks where enemies died. It never
+  // touches the world, so it cannot change the game — only the pixels.
+  const fx = createFx();
 
   function font(size, weight) {
     return (weight || '700') + ' ' + size + 'px system-ui, sans-serif';
@@ -323,6 +328,45 @@ export function createRenderer(canvas) {
     ctx.setLineDash([]);
   }
 
+  // Flat silhouette of one tower type, in its own colour, for the build
+  // ghost preview (drawPlots wraps it in globalAlpha 0.5). Same shapes as
+  // drawTower, minus glow, platform and level pips — a preview, not a tower.
+  function drawGhostTower(x, y, type) {
+    const def = towerDef(type);
+    ctx.fillStyle = def.color;
+    ctx.strokeStyle = def.color;
+    if (type === 'frost') {
+      ctx.beginPath();
+      ctx.moveTo(x, y - 19);
+      ctx.lineTo(x + 15, y);
+      ctx.lineTo(x, y + 19);
+      ctx.lineTo(x - 15, y);
+      ctx.closePath();
+      ctx.fill();
+    } else if (type === 'storm') {
+      ctx.lineWidth = 4;
+      for (let k = 0; k < 3; k += 1) {
+        ctx.beginPath();
+        ctx.arc(x, y + 10 - k * 9, 11 - k * 2, Math.PI * 0.15, Math.PI * 0.85);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(x, y - 16, 8, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(x, y - 18);
+      ctx.lineTo(x - 11, y + 10);
+      ctx.lineTo(x + 11, y + 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y - 6, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff3d0';
+      ctx.fill();
+    }
+  }
+
   function drawPlots(state, ui) {
     const plots = PLOTS || [];
     const towers = (state.towers || []);
@@ -345,7 +389,26 @@ export function createRenderer(canvas) {
       ctx.strokeStyle = hover || selected ? AMBER : '#6f6a9e';
       ctx.stroke();
       ctx.setLineDash([]);
-      if (hover || selected) {
+      if (hover) {
+        // Ghost preview of the tower that would be built here: a flat
+        // silhouette of the selected type at 50% alpha, its range ring,
+        // and a green/red tint for affordable / not. The '+' marker steps
+        // aside while hovering — the preview says more than the plus does.
+        const type = (ui && ui.selectedType) || 'ember';
+        const cost = towerCost(type);
+        const afford = cost !== undefined && (state.shards || 0) >= cost;
+        const tint = afford ? '126, 224, 129' : '255, 90, 78';
+        ctx.beginPath();
+        ctx.arc(plot.x, plot.y, towerRange({ type, level: 1 }), 0, Math.PI * 2);
+        ctx.setLineDash([8, 8]);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(' + tint + ', 0.45)';
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.5;
+        drawGhostTower(plot.x, plot.y, type);
+        ctx.globalAlpha = 1;
+      } else if (selected) {
         ctx.beginPath();
         ctx.arc(plot.x, plot.y, 20, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255, 179, 71, 0.85)';
@@ -626,6 +689,10 @@ export function createRenderer(canvas) {
   }
 
   function drawProjectiles(state) {
+    // The fx layer observes exactly one paint per draw call: update it
+    // here, before anything draws, so the kill bursts it spawns from this
+    // state are painted by drawParticles below, from the same state.
+    updateFx(fx, state);
     const list = state.projectiles || [];
     for (let i = 0; i < list.length; i += 1) {
       const p = list[i];
@@ -683,6 +750,9 @@ export function createRenderer(canvas) {
       text(f.text, f.x, f.y, 17, f.color || AMBER, 'center');
     }
     ctx.globalAlpha = 1;
+    // Renderer-local kill bursts (fx.js): type-flavoured sparks at the
+    // exact spot an enemy died. Drawn last so they read over the field.
+    drawFx(ctx, fx);
   }
 
   function drawHud(state) {
@@ -713,6 +783,7 @@ export function createRenderer(canvas) {
       const rect = towerCardRect(i);
       const selected = ui && ui.selectedType === card.key;
       const afford = (state.shards || 0) >= card.cost;
+      const hovered = ui && ui.hover && pointInRect(ui.hover.x, ui.hover.y, rect);
       roundRectPath(rect.x, rect.y, rect.w, rect.h, 8);
       if (selected) {
         // Amber halo behind the selected card so the active choice glows.
@@ -722,12 +793,16 @@ export function createRenderer(canvas) {
         ctx.fillStyle = '#33284f';
         ctx.fill();
         ctx.restore();
+      } else if (hovered) {
+        // Hovered card lifts a little: lighter fill, brighter edge.
+        ctx.fillStyle = '#1e1938';
+        ctx.fill();
       } else {
         ctx.fillStyle = '#17142e';
         ctx.fill();
       }
       ctx.lineWidth = selected ? 3 : 2;
-      ctx.strokeStyle = selected ? AMBER : (afford ? '#4a4470' : '#2e2a52');
+      ctx.strokeStyle = selected ? AMBER : hovered ? '#8a84b8' : (afford ? '#4a4470' : '#2e2a52');
       ctx.stroke();
       if (selected) {
         // Lit top edge on the chosen card.
@@ -748,6 +823,42 @@ export function createRenderer(canvas) {
       text(card.cost + ' shards', rect.x + 16, rect.y + 52, 16, afford ? AMBER : DIM, 'left');
       text(card.desc, rect.x + 16, rect.y + 72, 13, DIM, 'left', '400');
     }
+  }
+
+  // Small tooltip next to the cursor while hovering a tower card: name,
+  // cost and level-1 damage, all from the rules (towers.js) so the numbers
+  // can never disagree with the game. Drawn last on the play screen,
+  // clamped inside the canvas so it never runs off an edge.
+  function drawCardTooltip(state, ui) {
+    const hover = ui && ui.hover;
+    if (!hover) return;
+    let card = null;
+    for (let i = 0; i < TOWER_CARDS.length; i += 1) {
+      if (pointInRect(hover.x, hover.y, towerCardRect(i))) { card = TOWER_CARDS[i]; break; }
+    }
+    if (!card) return;
+    const damage = Math.round(towerDamage({ type: card.key, level: 1 }));
+    const tw = 204;
+    const th = 84;
+    let tx = hover.x + 16;
+    let ty = hover.y + 16;
+    if (tx + tw > W) tx = hover.x - tw - 16;
+    if (ty + th > H) ty = hover.y - th - 16;
+    if (tx < 4) tx = 4;
+    if (ty < HUD_H + 4) ty = HUD_H + 4;
+    // Never occlude the bottom-bar buttons (Send wave / Auto-send / Pause /
+    // Mute, x >= 584, y >= BAR_Y): if the box would dip into that strip,
+    // lift it clear above the bar instead.
+    if (tx + tw > 584 && tx < 948 && ty + th > BAR_Y) ty = BAR_Y - th - 8;
+    roundRectPath(tx, ty, tw, th, 8);
+    ctx.fillStyle = 'rgba(14, 13, 32, 0.95)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = card.color;
+    ctx.stroke();
+    text(card.name, tx + 12, ty + 24, 16, INK, 'left');
+    text(card.cost + ' shards  •  Damage ' + damage, tx + 12, ty + 48, 14, AMBER, 'left', '400');
+    text(card.desc, tx + 12, ty + 70, 13, DIM, 'left', '400');
   }
 
   function drawSelectionPanel(state, ui, screen) {
@@ -855,6 +966,7 @@ export function createRenderer(canvas) {
         if (b.id === 'upgrade' || b.id === 'sell') continue;
         button(b);
       }
+      drawCardTooltip(s, u);
     }
     if (s.waveState === 'build' && screen === SCREEN_PLAY) {
       text('Build phase — place towers, then send the wave.', W / 2, HUD_H + 26, 17, AMBER, 'center', '400');
