@@ -4,6 +4,11 @@
 // screens. Canvas 2D only: no images, no external fonts, no network.
 // The geometry of every clickable button lives in getButtons() below and
 // main.js hit-tests against that same list, so art and input can never drift.
+//
+// Lighting model (all deterministic, driven by state.time only):
+// the lantern is the warm key light, tower glows are coloured accents,
+// and every standing thing drops a soft ground shadow so the flat field
+// reads as depth. No Math.random(), no Date.now() anywhere in this file.
 import { PATH_POINTS, PLOTS, LANTERN } from './config.js';
 import { upgradeCost, sellValue, towerDamage, towerRange } from './towers.js';
 
@@ -71,6 +76,16 @@ function enemiesLeft(state) {
   const alive = (state.enemies && state.enemies.length) || 0;
   const queued = (state.spawnQueue && state.spawnQueue.length) || 0;
   return alive + queued;
+}
+
+// Deterministic 0..1 hash from an integer index + salt: pure integer
+// arithmetic, so the same index always speckles the same stone.
+function hash01(index, salt) {
+  let h = ((index * 2654435761 + salt * 40503) >>> 0);
+  h ^= h >>> 13;
+  h = (h * 1274126177) >>> 0;
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967295;
 }
 
 // Single source of truth for clickable button geometry. draw() renders
@@ -155,11 +170,48 @@ export function createRenderer(canvas) {
     ctx.fillStyle = 'rgba(8, 7, 20, ' + alpha + ')';
     ctx.fillRect(0, 0, W, H);
   }
+  // Soft ground shadow: the main 3D cue on a flat field. Drawn under the
+  // thing that casts it, before the thing itself.
+  function dropShadow(x, y, rx, ry, alpha) {
+    ctx.beginPath();
+    ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 0, 0, ' + (alpha === undefined ? 0.35 : alpha) + ')';
+    ctx.fill();
+  }
 
-  // Deterministic starfield: positions from index arithmetic, never random.
+  // Dusk field: indigo overhead fading to a faintly warm horizon, two
+  // deterministic sine ridges for a skyline, twinkling stars, and a
+  // stronger vignette so the eye falls on the lit path.
   function drawField(state) {
-    ctx.fillStyle = '#14132b';
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#12112e');
+    sky.addColorStop(0.45, '#1a1738');
+    sky.addColorStop(0.8, '#241d3d');
+    sky.addColorStop(1, '#2c2140');
+    ctx.fillStyle = sky;
     ctx.fillRect(0, 0, W, H);
+    // Far ridge (higher, darker) and near ridge (lower, a touch lighter),
+    // both from fixed sine sums — no random, same hills every frame.
+    const ridges = [
+      { base: 74, a1: 10, f1: 0.011, p1: 0.7, a2: 6, f2: 0.004, p2: 2.3, color: '#171637' },
+      { base: 96, a1: 8, f1: 0.013, p1: 2.1, a2: 5, f2: 0.005, p2: 0.4, color: '#1c1a42' },
+    ];
+    for (let k = 0; k < ridges.length; k += 1) {
+      const rg = ridges[k];
+      ctx.beginPath();
+      ctx.moveTo(0, HUD_H);
+      for (let x = 0; x <= W; x += 16) {
+        const y = rg.base
+          + Math.sin(x * rg.f1 + rg.p1) * rg.a1
+          + Math.sin(x * rg.f2 + rg.p2) * rg.a2;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(W, HUD_H);
+      ctx.closePath();
+      ctx.fillStyle = rg.color;
+      ctx.fill();
+    }
+    // Deterministic starfield: positions from index arithmetic, never random.
     for (let i = 0; i < 70; i += 1) {
       const sx = (i * 137) % W;
       const sy = (i * 89) % 480;
@@ -171,6 +223,13 @@ export function createRenderer(canvas) {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
     ctx.fillRect(0, 44, W, 120);
     ctx.fillRect(0, 300, W, 90);
+    // Vignette: dark corners pull the eye to the lantern-lit middle.
+    const vig = ctx.createRadialGradient(W / 2, H / 2, 240, W / 2, H / 2, 640);
+    vig.addColorStop(0, 'rgba(6, 5, 16, 0)');
+    vig.addColorStop(0.7, 'rgba(6, 5, 16, 0.14)');
+    vig.addColorStop(1, 'rgba(6, 5, 16, 0.44)');
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, W, H);
   }
 
   function drawPath() {
@@ -178,16 +237,85 @@ export function createRenderer(canvas) {
     if (pts.length < 2) return;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
+    // Path geometry as a polyline, reused for the body, the edge
+    // highlights and the speckle walk below.
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i].x, pts[i].y);
-    ctx.strokeStyle = '#241f3d';
-    ctx.lineWidth = 54;
+    // Outer dark bed: the path sits in a shallow trench, not on the grass.
+    ctx.strokeStyle = '#17122e';
+    ctx.lineWidth = 58;
     ctx.stroke();
-    ctx.strokeStyle = '#3a3654';
+    // Stone body, shaded top-to-bottom so the upper edge catches the
+    // (imaginary) sky light and the lower edge falls into shadow.
+    const shade = ctx.createLinearGradient(0, 44, 0, 508);
+    shade.addColorStop(0, '#463f6b');
+    shade.addColorStop(0.5, '#3a3654');
+    shade.addColorStop(1, '#2c2745');
+    ctx.strokeStyle = shade;
     ctx.lineWidth = 44;
     ctx.stroke();
+    // Stone speckle: deterministic hash dots along the whole path, so the
+    // stones read as stones instead of a flat ribbon. Dots sit inside the
+    // 44 px body, jittered across it by index hash, never random.
+    let speck = 0;
+    for (let s = 0; s < pts.length - 1; s += 1) {
+      const ax = pts[s].x;
+      const ay = pts[s].y;
+      const bx = pts[s + 1].x;
+      const by = pts[s + 1].y;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const steps = Math.floor(len / 15);
+      for (let k = 0; k <= steps; k += 1) {
+        const f = k / Math.max(1, steps);
+        const i = speck;
+        speck += 1;
+        const lat = (hash01(i, 1) - 0.5) * 36;
+        const rad = 1 + hash01(i, 2) * 1.6;
+        const a = 0.04 + hash01(i, 3) * 0.09;
+        const light = hash01(i, 4) > 0.5;
+        ctx.beginPath();
+        ctx.arc(ax + dx * f + nx * lat, ay + dy * f + ny * lat, rad, 0, Math.PI * 2);
+        ctx.fillStyle = light
+          ? 'rgba(255, 255, 255, ' + a.toFixed(2) + ')'
+          : 'rgba(0, 0, 0, ' + a.toFixed(2) + ')';
+        ctx.fill();
+      }
+    }
+    // Top edge highlight and bottom inner shadow, offset along the
+    // up-facing normal of each segment (light falls from above).
+    for (let side = 0; side < 2; side += 1) {
+      const off = side === 0 ? -19 : 19;
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i += 1) {
+        const p = pts[i];
+        const q = pts[Math.min(i + 1, pts.length - 1)];
+        const r = pts[Math.max(i - 1, 0)];
+        const dx = q.x - r.x;
+        const dy = q.y - r.y;
+        const len = Math.hypot(dx, dy) || 1;
+        let nx = -dy / len;
+        let ny = dx / len;
+        if (ny > 0) { nx = -nx; ny = -ny; }
+        const ox = p.x + nx * off;
+        const oy = p.y + ny * off;
+        if (i === 0) ctx.moveTo(ox, oy);
+        else ctx.lineTo(ox, oy);
+      }
+      ctx.strokeStyle = side === 0
+        ? 'rgba(255, 255, 255, 0.13)'
+        : 'rgba(0, 0, 0, 0.32)';
+      ctx.lineWidth = side === 0 ? 3 : 4;
+      ctx.stroke();
+    }
     // Worn centre line down the stones.
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.setLineDash([14, 18]);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.10)';
     ctx.lineWidth = 3;
@@ -232,12 +360,32 @@ export function createRenderer(canvas) {
   function drawLantern(state) {
     const t = state.time || 0;
     const flicker = 0.85 + 0.15 * Math.sin(t * 3.1) * Math.sin(t * 1.7 + 2);
-    const glow = ctx.createRadialGradient(LANTERN.x, LANTERN.y, 6, LANTERN.x, LANTERN.y, 110 * flicker);
-    glow.addColorStop(0, 'rgba(255, 179, 71, 0.55)');
-    glow.addColorStop(0.5, 'rgba(255, 140, 46, 0.18)');
-    glow.addColorStop(1, 'rgba(255, 140, 46, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(LANTERN.x - 115, LANTERN.y - 115, 230, 230);
+    // Layered glow: a wide faint halo plus a tighter bright core, both
+    // breathing with the same flicker so the light feels alive.
+    const halo = ctx.createRadialGradient(LANTERN.x, LANTERN.y, 6, LANTERN.x, LANTERN.y, 155 * flicker);
+    halo.addColorStop(0, 'rgba(255, 179, 71, 0.42)');
+    halo.addColorStop(0.45, 'rgba(255, 140, 46, 0.16)');
+    halo.addColorStop(1, 'rgba(255, 140, 46, 0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(LANTERN.x - 160, LANTERN.y - 160, 320, 320);
+    const core = ctx.createRadialGradient(LANTERN.x, LANTERN.y, 2, LANTERN.x, LANTERN.y, 72 * flicker);
+    core.addColorStop(0, 'rgba(255, 214, 130, 0.75)');
+    core.addColorStop(0.6, 'rgba(255, 179, 71, 0.28)');
+    core.addColorStop(1, 'rgba(255, 179, 71, 0)');
+    ctx.fillStyle = core;
+    ctx.fillRect(LANTERN.x - 76, LANTERN.y - 76, 152, 152);
+    // Warm light pool on the ground around the post's foot.
+    ctx.save();
+    ctx.translate(LANTERN.x, LANTERN.y + 34);
+    ctx.scale(1, 0.42);
+    const pool = ctx.createRadialGradient(0, 0, 2, 0, 0, 78);
+    pool.addColorStop(0, 'rgba(255, 179, 71, 0.30)');
+    pool.addColorStop(1, 'rgba(255, 179, 71, 0)');
+    ctx.fillStyle = pool;
+    ctx.fillRect(-80, -80, 160, 160);
+    ctx.restore();
+    // Ground shadow under the post.
+    dropShadow(LANTERN.x, LANTERN.y + 36, 22, 6, 0.45);
     // Post and hanging lantern.
     ctx.strokeStyle = '#4a3a22';
     ctx.lineWidth = 6;
@@ -255,8 +403,13 @@ export function createRenderer(canvas) {
     ctx.fillRect(LANTERN.x - 9, LANTERN.y - 30, 18, 22);
     ctx.fillStyle = '#fff3d0';
     ctx.fillRect(LANTERN.x - 4, LANTERN.y - 27, 8, 16);
+    // Hot white heart inside the glass so the flame reads as a source.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(LANTERN.x - 2, LANTERN.y - 24, 4, 10);
+    // Lives label sits ABOVE the lantern head: the old spot (below the
+    // post foot) is painted over by the bottom bar, so it was invisible.
     const lives = state.lives || 0;
-    text('x' + lives, LANTERN.x, LANTERN.y + 56, 16, AMBER, 'center');
+    text('x' + lives, LANTERN.x, LANTERN.y - 44, 16, AMBER, 'center');
   }
 
   function drawTower(t, selected, state) {
@@ -273,7 +426,9 @@ export function createRenderer(canvas) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    // Stone platform.
+    // Ground shadow first: the tower stands on the field, not in it.
+    dropShadow(t.x, t.y + 18, 20, 7);
+    // Stone platform, with a thin lit arc along its top edge.
     ctx.beginPath();
     ctx.arc(t.x, t.y, 21, 0, Math.PI * 2);
     ctx.fillStyle = '#241f3d';
@@ -281,12 +436,18 @@ export function createRenderer(canvas) {
     ctx.lineWidth = 2;
     ctx.strokeStyle = selected ? AMBER : '#4a4470';
     ctx.stroke();
-    const glow = ctx.createRadialGradient(t.x, t.y, 4, t.x, t.y, 34);
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, 21, Math.PI * 1.12, Math.PI * 1.88);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.stroke();
+    // Stronger coloured glow so each tower type reads at a glance.
+    const glow = ctx.createRadialGradient(t.x, t.y, 4, t.x, t.y, 42);
     glow.addColorStop(0, def.glow);
     glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.globalAlpha = 0.35;
+    ctx.globalAlpha = 0.6;
     ctx.fillStyle = glow;
-    ctx.fillRect(t.x - 34, t.y - 34, 68, 68);
+    ctx.fillRect(t.x - 42, t.y - 42, 84, 84);
     ctx.globalAlpha = 1;
     const angle = t.angle || -Math.PI / 2;
     if (t.type === 'ember') {
@@ -347,6 +508,39 @@ export function createRenderer(canvas) {
       ctx.fillStyle = def.color;
       ctx.fill();
     }
+    // Muzzle glow while this tower has a shot in the air. Read-only: the
+    // projectile list is only observed, never mutated. Chain links carry
+    // fromX/fromY + a life fraction; bolts carry their tower, so the glow
+    // sits at the muzzle tip while the bolt flies.
+    const projs = (state && state.projectiles) || [];
+    for (let i = 0; i < projs.length; i += 1) {
+      const p = projs[i];
+      if (p.fromX !== undefined && p.fromY !== undefined && p.life !== undefined && p.maxLife) {
+        const d = Math.hypot(p.fromX - t.x, p.fromY - t.y);
+        if (d < 10) {
+          const frac = Math.max(0, Math.min(1, p.life / p.maxLife));
+          const mg = ctx.createRadialGradient(p.fromX, p.fromY, 1, p.fromX, p.fromY, 12 + 22 * frac);
+          mg.addColorStop(0, 'rgba(255, 255, 255, ' + (0.85 * frac).toFixed(2) + ')');
+          mg.addColorStop(0.4, def.glow);
+          mg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          ctx.globalAlpha = 0.9 * frac;
+          ctx.fillStyle = mg;
+          ctx.fillRect(p.fromX - 36, p.fromY - 36, 72, 72);
+          ctx.globalAlpha = 1;
+        }
+      } else if (p.tower === t) {
+        const mx = t.x + Math.cos(angle) * 22;
+        const my = t.y + Math.sin(angle) * 22;
+        const mg = ctx.createRadialGradient(mx, my, 1, mx, my, 18);
+        mg.addColorStop(0, 'rgba(255, 255, 255, 0.85)');
+        mg.addColorStop(0.5, def.glow);
+        mg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.globalAlpha = 0.55;
+        ctx.fillStyle = mg;
+        ctx.fillRect(mx - 18, my - 18, 36, 36);
+        ctx.globalAlpha = 1;
+      }
+    }
     // Level pips above the tower.
     for (let p = 0; p < 3; p += 1) {
       ctx.beginPath();
@@ -368,12 +562,21 @@ export function createRenderer(canvas) {
       ctx.fillStyle = aura;
       ctx.fillRect(e.x - r - 26, e.y - r - 26, (r + 26) * 2, (r + 26) * 2);
     }
+    // Ground shadow so the shadow creature still casts one.
+    dropShadow(e.x, e.y + r * 0.75, r * 0.9, r * 0.32);
     ctx.beginPath();
     ctx.ellipse(e.x, e.y, r, r * 0.85, 0, 0, Math.PI * 2);
     ctx.fillStyle = chilled ? '#2a4a5e' : '#2a2438';
     ctx.fill();
     ctx.lineWidth = 2;
     ctx.strokeStyle = chilled ? FROST : '#4a3f6e';
+    ctx.stroke();
+    // Bright rim along the top edge: the body catches the sky light, so
+    // the silhouette separates from the dark path underneath.
+    ctx.beginPath();
+    ctx.ellipse(e.x, e.y, r, r * 0.85, 0, Math.PI * 1.05, Math.PI * 1.95);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = chilled ? 'rgba(159, 232, 255, 0.55)' : 'rgba(190, 175, 255, 0.38)';
     ctx.stroke();
     // Facing: toward the next waypoint, so the eyes lead the walk.
     const pts = PATH_POINTS || [];
@@ -389,6 +592,10 @@ export function createRenderer(canvas) {
     }
     const px = -fy;
     const py = fx;
+    // Glowing eyes: a small shadowBlur so they bloom against the dark body.
+    ctx.save();
+    ctx.shadowColor = eye;
+    ctx.shadowBlur = 8;
     for (let s = -1; s <= 1; s += 2) {
       const ex = e.x + fx * r * 0.35 + px * s * r * 0.38;
       const ey = e.y + fy * r * 0.35 + py * s * r * 0.38;
@@ -397,6 +604,7 @@ export function createRenderer(canvas) {
       ctx.fillStyle = eye;
       ctx.fill();
     }
+    ctx.restore();
     if (chilled) {
       ctx.beginPath();
       ctx.arc(e.x, e.y, r + 4, 0, Math.PI * 2);
@@ -480,6 +688,9 @@ export function createRenderer(canvas) {
   function drawHud(state) {
     ctx.fillStyle = PANEL_BG;
     ctx.fillRect(0, 0, W, HUD_H);
+    // Thin top highlight so the bar reads as a raised panel, not a slab.
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+    ctx.fillRect(0, 0, W, 1);
     ctx.fillStyle = AMBER;
     ctx.fillRect(0, HUD_H - 2, W, 2);
     text('Wave ' + (state.wave || 1) + '/15', 16, 29, 20, INK, 'left');
@@ -492,6 +703,9 @@ export function createRenderer(canvas) {
   function drawBottomBar(state, ui) {
     ctx.fillStyle = PANEL_BG;
     ctx.fillRect(0, BAR_Y, W, BAR_H);
+    // Thin top highlight, matching the HUD bar.
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+    ctx.fillRect(0, BAR_Y, W, 1);
     ctx.fillStyle = AMBER;
     ctx.fillRect(0, BAR_Y, W, 2);
     for (let i = 0; i < TOWER_CARDS.length; i += 1) {
@@ -500,11 +714,30 @@ export function createRenderer(canvas) {
       const selected = ui && ui.selectedType === card.key;
       const afford = (state.shards || 0) >= card.cost;
       roundRectPath(rect.x, rect.y, rect.w, rect.h, 8);
-      ctx.fillStyle = selected ? '#33284f' : '#17142e';
-      ctx.fill();
+      if (selected) {
+        // Amber halo behind the selected card so the active choice glows.
+        ctx.save();
+        ctx.shadowColor = AMBER;
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = '#33284f';
+        ctx.fill();
+        ctx.restore();
+      } else {
+        ctx.fillStyle = '#17142e';
+        ctx.fill();
+      }
       ctx.lineWidth = selected ? 3 : 2;
       ctx.strokeStyle = selected ? AMBER : (afford ? '#4a4470' : '#2e2a52');
       ctx.stroke();
+      if (selected) {
+        // Lit top edge on the chosen card.
+        ctx.beginPath();
+        ctx.moveTo(rect.x + 12, rect.y + 1);
+        ctx.lineTo(rect.x + rect.w - 12, rect.y + 1);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+        ctx.stroke();
+      }
       // Hotkey badge.
       ctx.beginPath();
       ctx.arc(rect.x + 20, rect.y + 20, 11, 0, Math.PI * 2);
