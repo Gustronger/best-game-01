@@ -1,53 +1,93 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// LANTERNFALL input — translates DOM events into game callbacks only.
+// Mouse clicks become canvas coordinates (the canvas may be CSS-scaled),
+// mouse moves become hover positions, keys become named actions. No game
+// logic lives here: main.js decides what each callback means.
+export function createInput(canvas, handlers) {
+  const h = handlers || {};
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+  function toCanvas(event) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width ? canvas.width / rect.width : 1;
+    const scaleY = rect.height ? canvas.height / rect.height : 1;
+    return {
+      x: (event.clientX - rect.left) * scaleX,
+      y: (event.clientY - rect.top) * scaleY,
+    };
+  }
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+  function onClick(event) {
+    if (!h.onClick) return;
+    const pos = toCanvas(event);
+    h.onClick(pos.x, pos.y);
+  }
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+  function onMove(event) {
+    if (!h.onHover) return;
+    const pos = toCanvas(event);
+    h.onHover(pos.x, pos.y);
+  }
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  function onLeave() {
+    if (h.onHover) h.onHover(null);
+  }
+
+  function onKey(event) {
+    if (!h.onKey) return;
+    let action = null;
+    switch (event.code) {
+      case 'Digit1':
+      case 'Numpad1':
+        action = 'select-ember';
+        break;
+      case 'Digit2':
+      case 'Numpad2':
+        action = 'select-frost';
+        break;
+      case 'Digit3':
+      case 'Numpad3':
+        action = 'select-storm';
+        break;
+      case 'Space':
+      case 'KeyP':
+        action = 'pause';
+        event.preventDefault();
+        break;
+      case 'Escape':
+        action = 'deselect';
+        break;
+      case 'Enter':
+        action = 'send-wave';
+        break;
+      case 'KeyM':
+        action = 'mute';
+        break;
+      case 'KeyR':
+        action = 'restart';
+        break;
+      default:
+        return;
+    }
+    if (event.repeat) return;
+    h.onKey(action);
+  }
+
+  function onBlur() {
+    if (h.onHover) h.onHover(null);
+  }
+
+  canvas.addEventListener('click', onClick);
+  canvas.addEventListener('mousemove', onMove);
+  canvas.addEventListener('mouseleave', onLeave);
+  window.addEventListener('keydown', onKey);
+  window.addEventListener('blur', onBlur);
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    destroy() {
+      canvas.removeEventListener('click', onClick);
+      canvas.removeEventListener('mousemove', onMove);
+      canvas.removeEventListener('mouseleave', onLeave);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('blur', onBlur);
     },
   };
 }
